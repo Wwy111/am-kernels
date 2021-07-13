@@ -8,17 +8,31 @@ Setting *setting;
 
 static char *hbrk;
 
-static uint32_t uptime_ms() { return io_read(AM_TIMER_UPTIME).us / 1000; }
+static uint64_t uptime() { return io_read(AM_TIMER_UPTIME).us; }
+
+static char *format_time(uint64_t us) {
+  static char buf[32];
+  uint32_t ms = us / 1000;
+  us -= ms * 1000;
+  assert(us < 1000);
+  int len = sprintf(buf, "%d.000", ms);
+  char *p = &buf[len - 1];
+  while (us > 0) {
+    *(p --) = '0' + us % 10;
+    us /= 10;
+  }
+  return buf;
+}
 
 // The benchmark list
 
-#define ENTRY(_name, _sname, _s, _m, _l, _desc) \
+#define ENTRY(_name, _sname, _s, _m, _l, _h, _desc) \
   { .prepare = bench_##_name##_prepare, \
     .run = bench_##_name##_run, \
     .validate = bench_##_name##_validate, \
     .name = _sname, \
     .desc = _desc, \
-    .settings = {_s, _m, _l}, },
+    .settings = {_s, _m, _l, _h}, },
 
 Benchmark benchmarks[] = {
   BENCHMARK_LIST(ENTRY)
@@ -26,7 +40,7 @@ Benchmark benchmarks[] = {
 
 // Running a benchmark
 static void bench_prepare(Result *res) {
-  res->msec = uptime_ms();
+  res->usec = uptime();
 }
 
 static void bench_reset() {
@@ -34,7 +48,7 @@ static void bench_reset() {
 }
 
 static void bench_done(Result *res) {
-  res->msec = uptime_ms() - res->msec;
+  res->usec = uptime() - res->usec;
 }
 
 static const char *bench_check(Benchmark *bench) {
@@ -54,9 +68,9 @@ static void run_once(Benchmark *b, Result *res) {
   res->pass = current->validate();
 }
 
-static unsigned long score(Benchmark *b, unsigned long tsc, unsigned long msec) {
-  if (msec == 0) return 0;
-  return (REF_SCORE / 1000) * setting->ref / msec;
+static uint32_t score(Benchmark *b, uint64_t usec) {
+  if (usec == 0) return 0;
+  return (uint64_t)(REF_SCORE) * setting->ref / usec;
 }
 
 int main(const char *args) {
@@ -70,9 +84,10 @@ int main(const char *args) {
   if      (strcmp(setting_name, "test" ) == 0) setting_id = 0;
   else if (strcmp(setting_name, "train") == 0) setting_id = 1;
   else if (strcmp(setting_name, "ref"  ) == 0) setting_id = 2;
+  else if (strcmp(setting_name, "huge" ) == 0) setting_id = 3;
   else {
     printf("Invalid mainargs: \"%s\"; "
-           "must be in {test, train, ref}\n", setting_name);
+           "must be in {test, train, ref, huge}\n", setting_name);
     halt(1);
   }
 
@@ -80,9 +95,10 @@ int main(const char *args) {
 
   printf("======= Running MicroBench [input *%s*] =======\n", setting_name);
 
-  unsigned long bench_score = 0;
+  uint32_t bench_score = 0;
   int pass = 1;
-  uint32_t t0 = uptime_ms();
+  uint64_t t0 = uptime();
+  uint64_t score_time = 0;
 
   for (int i = 0; i < LENGTH(benchmarks); i ++) {
     Benchmark *bench = &benchmarks[i];
@@ -93,14 +109,15 @@ int main(const char *args) {
     if (msg != NULL) {
       printf("Ignored %s\n", msg);
     } else {
-      unsigned long msec = ULONG_MAX;
+      uint64_t usec = ULLONG_MAX;
       int succ = 1;
       for (int i = 0; i < REPEAT; i ++) {
         Result res;
         run_once(bench, &res);
         printf(res.pass ? "*" : "X");
         succ &= res.pass;
-        if (res.msec < msec) msec = res.msec;
+        if (res.usec < usec) usec = res.usec;
+        score_time += res.usec;
       }
 
       if (succ) printf(" Passed.");
@@ -108,29 +125,30 @@ int main(const char *args) {
 
       pass &= succ;
 
-      unsigned long cur = score(bench, 0, msec);
+      uint32_t cur = succ ? score(bench, usec) : 0;
 
       printf("\n");
       if (setting_id != 0) {
-        printf("  min time: %d ms [%d]\n", (unsigned int)msec, (unsigned int)cur);
+        printf("  min time: %s ms [%d]\n", format_time(usec), cur);
       }
 
       bench_score += cur;
     }
   }
-  uint32_t t1 = uptime_ms();
+  uint64_t total_time = uptime() - t0;
 
   bench_score /= LENGTH(benchmarks);
 
   printf("==================================================\n");
   printf("MicroBench %s", pass ? "PASS" : "FAIL");
-  if (setting_id == 2) {
-    printf("        %d Marks\n", (unsigned int)bench_score);
+  if (setting_id >= 2) {
+    printf("        %d Marks\n", bench_score);
     printf("                   vs. %d Marks (%s)\n", REF_SCORE, REF_CPU);
   } else {
     printf("\n");
   }
-  printf("Total time: %d ms\n", t1 - t0);
+  printf("Scored time: %s ms\n", format_time(score_time));
+  printf("Total  time: %s ms\n", format_time(total_time));
   return 0;
 }
 

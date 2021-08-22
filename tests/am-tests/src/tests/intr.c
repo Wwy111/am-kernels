@@ -1,8 +1,12 @@
 #include <amtest.h>
+#define MTIME_ADDR     0x20000000
+#define MTIMECMP_ADDR  (MTIME_ADDR + 0x8)
 
 Context *simple_trap(Event ev, Context *ctx) {
+  // printf("event is %d\n", ev.event);
   switch(ev.event) {
     case EVENT_IRQ_TIMER:
+      *((uint64_t *)MTIMECMP_ADDR) += 0x500000;
       putch('t'); break;
     case EVENT_IRQ_IODEV:
       putch('d'); break;
@@ -20,7 +24,7 @@ void hello_intr() {
   io_read(AM_INPUT_CONFIG);
   iset(1);
   while (1) {
-    for (volatile int i = 0; i < 10000000; i++) ;
+    for (volatile int i = 0; i < 100000; i++) ;
     yield();
   }
 }
